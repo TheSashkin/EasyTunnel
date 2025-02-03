@@ -1,5 +1,5 @@
 # EasyTunnel
-ngrok alternative
+A barebones alternative to ngrok
 
 ## How to config
 ### Server
