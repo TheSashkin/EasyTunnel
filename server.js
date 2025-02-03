@@ -85,16 +85,18 @@ if (!fs.existsSync('easytunnel.server.json')) {
                             delete clients[id]
                         })
                         setTimeout(()=>{
-                            for(var x in clientsMissedPackets[id]){
-                                socket.write(clientsMissedPackets[id][x])
-                            }
-                            delete clientsMissedPackets[id]
                             if(clients[id]){
+                                for(var x in clientsMissedPackets[id]){
+                                    socket.write(clientsMissedPackets[id][x])
+                                }
+                                delete clientsMissedPackets[id]
                                 clients[id].on("data",data=>{
                                     socket.write(data)
                                 })
                                 socket.on("data",data=>{
-                                    clients[id].write(data)
+                                    if(clients[id]){
+                                        clients[id].write(data)
+                                    }
                                 })
                             }
                         },2000)
