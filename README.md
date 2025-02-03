@@ -2,6 +2,7 @@
 A barebones alternative to ngrok
 
 ## How to config
+- Config file will be created after the first launch.
 ### Server
 ```json
 {
@@ -28,7 +29,7 @@ A barebones alternative to ngrok
 - serverIp - IP address of your server
 - Token - text that will be used for verifying
 - Ports - the local ports to forward and the remote ports to use for them
-### Ports structure:
+#### Ports structure
 ```json
 {
     "ports": [
