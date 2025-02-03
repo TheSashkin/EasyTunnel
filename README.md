@@ -1,8 +1,8 @@
 # EasyTunnel
-A barebones alternative to ngrok
+A barebones alternative to ngrok with a lot of shitcode
 
 ## How to config
-- Config file will be created after the first launch.
+**Config file will be created after the first launch.**
 ### Server
 ```json
 {
