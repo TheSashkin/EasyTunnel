@@ -1,7 +1,7 @@
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
-
+ 
 const CONFIG_FILE = 'easytunnel.agent.json';
 const DEFAULT_CONFIG = {
   serverPort: 65535,
