@@ -1,5 +1,6 @@
 const net = require('net');
 const fs = require('fs');
+const path = require('path');
 
 const CONFIG_FILE = 'easytunnel.server.json';
 const DEFAULT_CONFIG = {
@@ -9,6 +10,8 @@ const DEFAULT_CONFIG = {
 
 const clients = {};
 const clientsMissedPackets = {};
+
+const portServers = {};
 
 function initializeConfig() {
   try {
@@ -30,10 +33,42 @@ function generateConnectionId() {
   return Math.floor(Math.random() * 10000000).toString();
 }
 
+function closeExistingPortServer(port) {
+  return new Promise((resolve) => {
+    if (portServers[port]) {
+      console.log(`Closing existing server on port ${port}`);
+      const clientIds = Object.keys(clients).filter(id => 
+        clients[id] && clients[id]._portServer === port);
+      
+      clientIds.forEach(id => {
+        if (clients[id]) {
+          clients[id].end();
+          delete clients[id];
+          delete clientsMissedPackets[id];
+        }
+      });
+      
+      portServers[port].close(() => {
+        delete portServers[port];
+        resolve();
+      });
+      
+      setTimeout(() => {
+        if (portServers[port]) {
+          delete portServers[port];
+          resolve();
+        }
+      }, 1000);
+    } else {
+      resolve();
+    }
+  });
+}
+
 function handleAgentConnection(socket) {
   socket.write("verifiedAgent");
   
-  socket.once('data', (data) => {
+  socket.once('data', async (data) => {
     const remotePort = parseInt(data.toString(), 10);
     
     if (isNaN(remotePort)) {
@@ -42,8 +77,12 @@ function handleAgentConnection(socket) {
       return;
     }
     
+    await closeExistingPortServer(remotePort);
+    
     const portServer = net.createServer((clientSocket) => {
       const id = generateConnectionId();
+      
+      clientSocket._portServer = remotePort;
       
       socket.write(`newClient${id}`);
       
@@ -62,25 +101,35 @@ function handleAgentConnection(socket) {
       });
     });
     
-    portServer.listen(remotePort, () => {
-      socket.write("registeredPorts");
-      console.log(`Tunnel opened on port ${remotePort}`);
-    });
+    portServers[remotePort] = portServer;
     
-    portServer.on("error", (err) => {
-      console.error(`Port server error on port ${remotePort}: ${err.message}`);
+    try {
+      portServer.listen(remotePort, () => {
+        socket.write("registeredPorts");
+        console.log(`Tunnel opened on port ${remotePort}`);
+      });
+      
+      portServer.on("error", (err) => {
+        console.error(`Port server error on port ${remotePort}: ${err.message}`);
+        socket.write("failedRegister");
+        delete portServers[remotePort];
+        socket.end();
+      });
+    } catch (err) {
+      console.error(`Failed to set up port server on ${remotePort}: ${err.message}`);
       socket.write("failedRegister");
       socket.end();
-    });
+      return;
+    }
     
     socket.on('end', () => {
       console.log(`Agent disconnected, closing port ${remotePort}`);
-      portServer.close();
+      closeExistingPortServer(remotePort);
     });
     
     socket.on('error', (err) => {
       console.error(`Agent socket error: ${err.message}`);
-      portServer.close();
+      closeExistingPortServer(remotePort);
     });
   });
 }
@@ -176,6 +225,18 @@ function main() {
     server.on('error', (err) => {
       console.error(`Server error: ${err.message}`);
       process.exit(1);
+    });
+    
+    process.on('SIGINT', () => {
+      console.log('Shutting down server...');
+      Object.keys(portServers).forEach(port => {
+        closeExistingPortServer(parseInt(port, 10));
+      });
+      
+      server.close(() => {
+        console.log('Server shutdown complete');
+        process.exit(0);
+      });
     });
     
     server.listen(port, () => {
