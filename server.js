@@ -1,5 +1,6 @@
 const net = require('net');
 const fs = require('fs');
+const path = require('path');
 
 const CONFIG_FILE = 'easytunnel.server.json';
 const DEFAULT_CONFIG = {
@@ -9,6 +10,7 @@ const DEFAULT_CONFIG = {
 
 const clients = {};
 const clientsMissedPackets = {};
+const portServers = {};
 
 function initializeConfig() {
   try {
@@ -30,10 +32,39 @@ function generateConnectionId() {
   return Math.floor(Math.random() * 10000000).toString();
 }
 
+function closeExistingPortServer(port) {
+  return new Promise((resolve) => {
+    if (portServers[port]) {
+      const existingServer = portServers[port].server;
+      delete portServers[port];
+      
+      if (existingServer.listening) {
+        existingServer.close(() => {
+          resolve();
+        });
+        
+        existingServer.getConnections((err, count) => {
+          if (!err && count > 0) {
+            existingServer.unref();
+          }
+        });
+        
+        setTimeout(() => {
+          resolve();
+        }, 1000);
+      } else {
+        resolve();
+      }
+    } else {
+      resolve();
+    }
+  });
+}
+
 function handleAgentConnection(socket) {
   socket.write("verifiedAgent");
   
-  socket.once('data', (data) => {
+  socket.once('data', async (data) => {
     const remotePort = parseInt(data.toString(), 10);
     
     if (isNaN(remotePort)) {
@@ -42,46 +73,77 @@ function handleAgentConnection(socket) {
       return;
     }
     
-    const portServer = net.createServer((clientSocket) => {
-      const id = generateConnectionId();
+    try {
+      await closeExistingPortServer(remotePort);
       
-      socket.write(`newClient${id}`);
+      const portServer = net.createServer((clientSocket) => {
+        const id = generateConnectionId();
+        
+        socket.write(`newClient${id}`);
+        
+        clients[id] = clientSocket;
+        clientsMissedPackets[id] = [];
+        
+        clientSocket.on('data', (data) => {
+          if (clientsMissedPackets[id]) {
+            clientsMissedPackets[id].push(data);
+          }
+        });
+        
+        clientSocket.on("error", () => {
+          clientSocket.end();
+        });
+      });
       
-      clients[id] = clientSocket;
-      clientsMissedPackets[id] = [];
-      
-      clientSocket.on('data', (data) => {
-        if (clientsMissedPackets[id]) {
-          clientsMissedPackets[id].push(data);
+      portServer.on("error", () => {
+        socket.write("failedRegister");
+        socket.end();
+        if (portServers[remotePort] && portServers[remotePort].server === portServer) {
+          delete portServers[remotePort];
         }
       });
       
-      clientSocket.on("error", (err) => {
-        console.error(`Client socket error: ${err.message}`);
-        clientSocket.end();
+      portServer.listen(remotePort, () => {
+        portServers[remotePort] = {
+          server: portServer,
+          agentSocket: socket
+        };
+        
+        socket.write("registeredPorts");
+        console.log(`Tunnel opened on port ${remotePort}`);
       });
-    });
-    
-    portServer.listen(remotePort, () => {
-      socket.write("registeredPorts");
-      console.log(`Tunnel opened on port ${remotePort}`);
-    });
-    
-    portServer.on("error", (err) => {
-      console.error(`Port server error on port ${remotePort}: ${err.message}`);
+      
+      socket.on('end', () => {
+        cleanupAgentResources(socket);
+      });
+      
+      socket.on('error', () => {
+        cleanupAgentResources(socket);
+      });
+    } catch (err) {
       socket.write("failedRegister");
       socket.end();
-    });
-    
-    socket.on('end', () => {
-      console.log(`Agent disconnected, closing port ${remotePort}`);
-      portServer.close();
-    });
-    
-    socket.on('error', (err) => {
-      console.error(`Agent socket error: ${err.message}`);
-      portServer.close();
-    });
+    }
+  });
+}
+
+function cleanupAgentResources(agentSocket) {
+  Object.keys(portServers).forEach(port => {
+    if (portServers[port].agentSocket === agentSocket) {
+      const server = portServers[port].server;
+      
+      delete portServers[port];
+      
+      if (server && server.listening) {
+        server.close();
+        
+        server.getConnections((err, count) => {
+          if (!err && count > 0) {
+            server.unref();
+          }
+        });
+      }
+    }
   });
 }
 
@@ -92,7 +154,6 @@ function handleClientConnection(socket) {
     const id = data.toString();
     
     if (!clients[id]) {
-      console.error(`Client tried to connect with invalid ID: ${id}`);
       socket.end();
       return;
     }
@@ -110,8 +171,7 @@ function handleClientConnection(socket) {
     };
     
     socket.on('end', cleanup);
-    socket.on('error', (err) => {
-      console.error(`Client connection error: ${err.message}`);
+    socket.on('error', () => {
       cleanup();
       socket.end();
     });
@@ -121,14 +181,13 @@ function handleClientConnection(socket) {
       delete clients[id];
     });
     
-    clientSocket.on('error', (err) => {
-      console.error(`Client socket error: ${err.message}`);
+    clientSocket.on('error', () => {
       cleanup();
     });
     
     setTimeout(() => {
       if (clients[id]) {
-        if (clientsMissedPackets[id]) {
+        if (clientsMissedPackets[id] && clientsMissedPackets[id].length > 0) {
           clientsMissedPackets[id].forEach(packet => {
             socket.write(packet);
           });
@@ -155,9 +214,7 @@ function main() {
     const { port, token } = config;
     
     const server = net.createServer((socket) => {
-      socket.on('error', (err) => {
-        console.error(`Socket error: ${err.message}`);
-      });
+      socket.on('error', () => {});
       
       socket.once('data', (data) => {
         const message = data.toString();
@@ -167,7 +224,6 @@ function main() {
         } else if (message === `${token}Client`) {
           handleClientConnection(socket);
         } else {
-          console.log('Invalid connection attempt');
           socket.end();
         }
       });
